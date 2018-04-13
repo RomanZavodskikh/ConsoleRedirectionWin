@@ -9,22 +9,21 @@
 
 int _tmain(int argc, TCHAR *argv[])
 {
-    HANDLE hPipe;
-    LPTSTR lpvMessage = TEXT("Default message from client.");
+    HANDLE hPipeClientServer;
+    HANDLE hHeap = GetProcessHeap();
+    TCHAR* pchRequest = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(TCHAR));
+    TCHAR* pchReply = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(TCHAR));
     TCHAR  chBuf[BUFSIZE];
     BOOL   fSuccess = FALSE;
     DWORD  cbRead, cbToWrite, cbWritten, dwMode;
-    LPTSTR lpszPipename = TEXT("\\\\.\\pipe\\mynamedpipe");
-
-    if (argc > 1)
-        lpvMessage = argv[1];
+    LPTSTR lpszPipeClientServer = TEXT("\\\\.\\pipe\\clientserver");
 
     // Try to open a named pipe; wait for it, if necessary. 
 
     while (1)
     {
-        hPipe = CreateFile(
-            lpszPipename,   // pipe name 
+        hPipeClientServer = CreateFile(
+            lpszPipeClientServer,   // pipe name 
             GENERIC_READ |  // read and write access 
             GENERIC_WRITE,
             0,              // no sharing 
@@ -35,7 +34,7 @@ int _tmain(int argc, TCHAR *argv[])
 
                             // Break if the pipe handle is valid. 
 
-        if (hPipe != INVALID_HANDLE_VALUE)
+        if (hPipeClientServer != INVALID_HANDLE_VALUE)
             break;
 
         // Exit if an error other than ERROR_PIPE_BUSY occurs. 
@@ -48,7 +47,7 @@ int _tmain(int argc, TCHAR *argv[])
 
         // All pipe instances are busy, so wait for 20 seconds. 
 
-        if (!WaitNamedPipe(lpszPipename, 20000))
+        if (!WaitNamedPipe(lpszPipeClientServer, 20000))
         {
             printf("Could not open pipe: 20 second wait timed out.");
             return -1;
@@ -59,7 +58,7 @@ int _tmain(int argc, TCHAR *argv[])
 
     dwMode = PIPE_READMODE_MESSAGE;
     fSuccess = SetNamedPipeHandleState(
-        hPipe,    // pipe handle 
+        hPipeClientServer,    // pipe handle 
         &dwMode,  // new pipe mode 
         NULL,     // don't set maximum bytes 
         NULL);    // don't set maximum time 
@@ -69,53 +68,69 @@ int _tmain(int argc, TCHAR *argv[])
         return -1;
     }
 
-    // Send a message to the pipe server. 
-
-    cbToWrite = (lstrlen(lpvMessage) + 1) * sizeof(TCHAR);
-    _tprintf(TEXT("Sending %d byte message: \"%s\"\n"), cbToWrite, lpvMessage);
-
-    fSuccess = WriteFile(
-        hPipe,                  // pipe handle 
-        lpvMessage,             // message 
-        cbToWrite,              // message length 
-        &cbWritten,             // bytes written 
-        NULL);                  // not overlapped 
-
-    if (!fSuccess)
+    while (1)
     {
-        _tprintf(TEXT("WriteFile to pipe failed. GLE=%d\n"), GetLastError());
-        return -1;
-    }
+        HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+        HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
 
-    printf("\nMessage sent to server, receiving reply as follows:\n");
+        fSuccess = ReadFile(
+            hStdin,
+            pchRequest,
+            BUFSIZE * sizeof(*pchRequest),
+            &cbRead,
+            NULL);
 
-    do
-    {
+        if (!fSuccess)
+        {
+            _tprintf(TEXT("ReadFile from stdin failed. GLE=%d\n"), GetLastError());
+            return -1;
+        }
+
+        fSuccess = WriteFile(
+            hPipeClientServer,                  // pipe handle 
+            pchRequest,             // message 
+            cbRead,              // message length 
+            &cbWritten,             // bytes written 
+            NULL);                  // not overlapped 
+
+        if (!fSuccess || cbRead != cbWritten)
+        {
+            _tprintf(TEXT("WriteFile to pipe failed. GLE=%d\n"), GetLastError());
+            return -1;
+        }
+
         // Read from the pipe. 
 
         fSuccess = ReadFile(
-            hPipe,    // pipe handle 
-            chBuf,    // buffer to receive reply 
+            hPipeClientServer,    // pipe handle 
+            pchReply,    // buffer to receive reply 
             BUFSIZE * sizeof(TCHAR),  // size of buffer 
             &cbRead,  // number of bytes read 
             NULL);    // not overlapped 
 
-        if (!fSuccess && GetLastError() != ERROR_MORE_DATA)
-            break;
+        if (!fSuccess)
+        {
+            _tprintf(TEXT("ReadFile from pipe failed. GLE=%d\n"), GetLastError());
+            return -1;
+        }
 
-        _tprintf(TEXT("\"%s\"\n"), chBuf);
-    } while (!fSuccess);  // repeat loop if ERROR_MORE_DATA 
+        fSuccess = WriteFile(
+            hStdout,
+            pchReply,
+            cbRead,
+            &cbWritten,
+            NULL);
 
-    if (!fSuccess)
-    {
-        _tprintf(TEXT("ReadFile from pipe failed. GLE=%d\n"), GetLastError());
-        return -1;
+        if (!fSuccess || cbRead != cbWritten)
+        {
+            _tprintf(TEXT("WriteFile to stdout failed. GLE=%d\n"), GetLastError());
+            return -1;
+        }
     }
 
-    printf("\n<End of message, press ENTER to terminate connection and exit>");
-    _getch();
-
-    CloseHandle(hPipe);
+    CloseHandle(hPipeClientServer);
+    HeapFree(hHeap, 0, pchRequest);
+    HeapFree(hHeap, 0, pchReply);
 
     return 0;
 }
