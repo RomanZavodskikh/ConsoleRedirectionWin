@@ -9,14 +9,14 @@
 
 int _tmain(int argc, TCHAR *argv[])
 {
-    HANDLE hPipeClientServer;
+    HANDLE hPipeClientServer, hPipeServerClient;
     HANDLE hHeap = GetProcessHeap();
     TCHAR* pchRequest = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(TCHAR));
     TCHAR* pchReply = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(TCHAR));
-    TCHAR  chBuf[BUFSIZE];
     BOOL   fSuccess = FALSE;
     DWORD  cbRead, cbToWrite, cbWritten, dwMode;
     LPTSTR lpszPipeClientServer = TEXT("\\\\.\\pipe\\clientserver");
+    LPTSTR lpszPipeServerClient = TEXT("\\\\.\\pipe\\serverclient");
 
     // Try to open a named pipe; wait for it, if necessary. 
 
@@ -53,12 +53,57 @@ int _tmain(int argc, TCHAR *argv[])
             return -1;
         }
     }
+    // =================================================================
+    while (1) 
+    {
+        hPipeServerClient = CreateFile(
+            lpszPipeServerClient,   // pipe name 
+            GENERIC_READ |  // read and write access 
+            GENERIC_WRITE,
+            0,              // no sharing 
+            NULL,           // default security attributes
+            OPEN_EXISTING,  // opens existing pipe 
+            0,              // default attributes 
+            NULL);          // no template file 
+
+                            // Break if the pipe handle is valid. 
+
+        if (hPipeServerClient != INVALID_HANDLE_VALUE)
+            break;
+
+        // Exit if an error other than ERROR_PIPE_BUSY occurs. 
+
+        if (GetLastError() != ERROR_PIPE_BUSY)
+        {
+            _tprintf(TEXT("Could not open pipe(2). GLE=%d\n"), GetLastError());
+            return -1;
+        }
+
+        // All pipe instances are busy, so wait for 20 seconds. 
+
+        if (!WaitNamedPipe(lpszPipeServerClient, 20000))
+        {
+            printf("Could not open pipe: 20 second wait timed out.");
+            return -1;
+        }
+    }
 
     // The pipe connected; change to message-read mode. 
 
     dwMode = PIPE_READMODE_MESSAGE;
     fSuccess = SetNamedPipeHandleState(
         hPipeClientServer,    // pipe handle 
+        &dwMode,  // new pipe mode 
+        NULL,     // don't set maximum bytes 
+        NULL);    // don't set maximum time 
+    if (!fSuccess)
+    {
+        _tprintf(TEXT("SetNamedPipeHandleState failed. GLE=%d\n"), GetLastError());
+        return -1;
+    }
+    //==========================================================
+    fSuccess = SetNamedPipeHandleState(
+        hPipeServerClient,    // pipe handle 
         &dwMode,  // new pipe mode 
         NULL,     // don't set maximum bytes 
         NULL);    // don't set maximum time 
@@ -102,7 +147,7 @@ int _tmain(int argc, TCHAR *argv[])
         // Read from the pipe. 
 
         fSuccess = ReadFile(
-            hPipeClientServer,    // pipe handle 
+            hPipeServerClient,    // pipe handle 
             pchReply,    // buffer to receive reply 
             BUFSIZE * sizeof(TCHAR),  // size of buffer 
             &cbRead,  // number of bytes read 
