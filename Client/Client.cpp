@@ -22,20 +22,22 @@
 DWORD WINAPI InstanceThreadClientServer(LPVOID);
 DWORD WINAPI InstanceThreadServerClient(LPVOID);
 
-int _tmain(int argc, TCHAR *argv[])
+int _tmain(int argc, char *argv[])
 {
-    HANDLE hPipeClientServer, hPipeServerClient;
     HANDLE hThreadClientServer, hThreadServerClient;
     HANDLE hHeap = GetProcessHeap();
     TCHAR* pchRequest = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(TCHAR));
     TCHAR* pchReply = (TCHAR*)HeapAlloc(hHeap, 0, BUFSIZE * sizeof(TCHAR));
     BOOL   fSuccess = FALSE;
-    DWORD  cbRead, cbToWrite, cbWritten, dwMode;
     DWORD  dwThreadId = 0;
-    LPTSTR lpszPipeClientServer = TEXT("\\\\.\\pipe\\clientserver");
-    LPTSTR lpszPipeServerClient = TEXT("\\\\.\\pipe\\serverclient");
     WSADATA wsaData;
     int iResult;
+
+    if (argc < 2)
+    {
+        _tprintf(TEXT("Usage: %s <ip addr of another instance>\n"), argv[0]);
+        return 1;
+    }
 
     iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (iResult != 0) {
@@ -43,43 +45,11 @@ int _tmain(int argc, TCHAR *argv[])
         return 1;
     }
 
-    while (1)
-    {
-        hPipeClientServer = CreateFile(
-            lpszPipeClientServer,   // pipe name 
-            GENERIC_READ |  // read and write access 
-            GENERIC_WRITE,
-            0,              // no sharing 
-            NULL,           // default security attributes
-            OPEN_EXISTING,  // opens existing pipe 
-            0,              // default attributes 
-            NULL);          // no template file 
-
-                            // Break if the pipe handle is valid. 
-
-         if (hPipeClientServer != INVALID_HANDLE_VALUE)
-            break;
-
-        // Exit if an error other than ERROR_PIPE_BUSY occurs. 
-        if (GetLastError() != ERROR_PIPE_BUSY)
-        {
-            _tprintf(TEXT("Could not open pipe. GLE=%d\n"), GetLastError());
-            return -1;
-        }
-
-        // All pipe instances are busy, so wait for 20 seconds. 
-        if (!WaitNamedPipe(lpszPipeClientServer, 20000))
-        {
-            printf("Could not open pipe: 20 second wait timed out.");
-            return -1;
-        }
-    }
-
     hThreadClientServer = CreateThread(
         NULL,              // no security attribute 
         0,                 // default stack size 
         InstanceThreadClientServer,    // thread proc
-        (LPVOID)hPipeClientServer,    // thread parameter 
+        argv[1],    // thread parameter 
         0,                 // not suspended 
         &dwThreadId);      // returns thread ID 
 
@@ -90,42 +60,11 @@ int _tmain(int argc, TCHAR *argv[])
     }
     else CloseHandle(hThreadClientServer);
     // =================================================================
-    while (1) 
-    {
-        hPipeServerClient = CreateFile(
-            lpszPipeServerClient,   // pipe name 
-            GENERIC_READ |  // read and write access 
-            GENERIC_WRITE,
-            0,              // no sharing 
-            NULL,           // default security attributes
-            OPEN_EXISTING,  // opens existing pipe 
-            0,              // default attributes 
-            NULL);          // no template file 
-
-                            // Break if the pipe handle is valid. 
-
-        if (hPipeServerClient != INVALID_HANDLE_VALUE)
-            break;
-
-        // Exit if an error other than ERROR_PIPE_BUSY occurs. 
-        if (GetLastError() != ERROR_PIPE_BUSY)
-        {
-            _tprintf(TEXT("Could not open pipe(2). GLE=%d\n"), GetLastError());
-            return -1;
-        }
-
-        // All pipe instances are busy, so wait for 20 seconds. 
-        if (!WaitNamedPipe(lpszPipeServerClient, 20000))
-        {
-            printf("Could not open pipe: 20 second wait timed out.");
-            return -1;
-        }
-    }
     hThreadServerClient = CreateThread(
         NULL,              // no security attribute 
         0,                 // default stack size 
         InstanceThreadServerClient,    // thread proc
-        (LPVOID)hPipeServerClient,    // thread parameter 
+        NULL,    // thread parameter 
         0,                 // not suspended 
         &dwThreadId);      // returns thread ID 
 
@@ -135,36 +74,11 @@ int _tmain(int argc, TCHAR *argv[])
         return -1;
     }
     else CloseHandle(hThreadServerClient);
-    
-    // The pipe connected; change to message-read mode. 
-    dwMode = PIPE_READMODE_MESSAGE;
-    fSuccess = SetNamedPipeHandleState(
-        hPipeClientServer,    // pipe handle 
-        &dwMode,  // new pipe mode 
-        NULL,     // don't set maximum bytes 
-        NULL);    // don't set maximum time 
-    if (!fSuccess)
-    {
-        _tprintf(TEXT("SetNamedPipeHandleState failed. GLE=%d\n"), GetLastError());
-        return -1;
-    }
-    //==========================================================
-    fSuccess = SetNamedPipeHandleState(
-        hPipeServerClient,    // pipe handle 
-        &dwMode,  // new pipe mode 
-        NULL,     // don't set maximum bytes 
-        NULL);    // don't set maximum time 
-    if (!fSuccess)
-    {
-        _tprintf(TEXT("SetNamedPipeHandleState failed. GLE=%d\n"), GetLastError());
-        return -1;
-    }
 
     for (;;) {
         Sleep(100);
     }
 
-    CloseHandle(hPipeClientServer);
     WSACleanup();
     HeapFree(hHeap, 0, pchRequest);
     HeapFree(hHeap, 0, pchReply);
@@ -184,7 +98,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
 
     DWORD cbBytesRead = 0, cbReplyBytes = 0, cbWritten = 0;
     BOOL fSuccess = FALSE;
-    HANDLE hPipe = NULL;
 
     SOCKET ConnectSocketClientServer = INVALID_SOCKET;
     struct addrinfo *result = NULL,
@@ -194,17 +107,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
 
     // Do some extra error checking since the app will keep running even if this
     // thread fails.
-
-    if (lpvParam == NULL)
-    {
-        printf("\nERROR - Pipe Server Failure:\n");
-        printf("   InstanceThread got an unexpected NULL value in lpvParam.\n");
-        printf("   InstanceThread exitting.\n");
-        if (pchReply != NULL) HeapFree(hHeap, 0, pchReply);
-        if (pchRequest != NULL) HeapFree(hHeap, 0, pchRequest);
-        return (DWORD)-1;
-    }
-
     if (pchRequest == NULL)
     {
         printf("\nERROR - Pipe Server Failure:\n");
@@ -223,41 +125,47 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
         return (DWORD)-1;
     }
 
-    hPipe = (HANDLE)lpvParam;
-
     ZeroMemory(&hints, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
-    // Resolve the server address and port
-    iResult = getaddrinfo("localhost", DEFAULT_PORT_CLIENT_SERVER, &hints, &result);
-    if (iResult != 0) {
-        printf("getaddrinfo failed with error: %d\n", iResult);
-        WSACleanup();
-        return 1;
-    }
-
     // Attempt to connect to an address until one succeeds
-    for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
-        // Create a SOCKET for connecting to server
-        ConnectSocketClientServer = socket(ptr->ai_family, ptr->ai_socktype,
-            ptr->ai_protocol);
-        if (ConnectSocketClientServer == INVALID_SOCKET) {
-            printf("socket failed with error: %ld\n", WSAGetLastError());
-            WSACleanup();
-            return 1;
-        }
-
-        // Connect to server.
-        iResult = connect(ConnectSocketClientServer, ptr->ai_addr, (int)ptr->ai_addrlen);
-        if (iResult == SOCKET_ERROR) {
-            closesocket(ConnectSocketClientServer);
-            ConnectSocketClientServer = INVALID_SOCKET;
+    do
+    {
+        // Resolve the server address and port
+        char bufName[80];
+        size_t ign;
+        wcstombs_s(&ign, bufName, (TCHAR*)lpvParam, 80);
+        iResult = getaddrinfo(bufName, DEFAULT_PORT_CLIENT_SERVER, &hints, &result);
+        if (iResult != 0) {
+            printf("getaddrinfo failed with error: %d with host %s\n", iResult, (char*)bufName);
+            Sleep(1000);
             continue;
         }
-        break;
+
+        for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
+            // Create a SOCKET for connecting to server
+            ConnectSocketClientServer = socket(ptr->ai_family, ptr->ai_socktype,
+                ptr->ai_protocol);
+            if (ConnectSocketClientServer == INVALID_SOCKET) {
+                printf("socket failed with error: %ld\n", WSAGetLastError());
+                WSACleanup();
+                return 1;
+            }
+
+            // Connect to server.
+            iResult = connect(ConnectSocketClientServer, ptr->ai_addr, (int)ptr->ai_addrlen);
+            if (iResult == SOCKET_ERROR) {
+                closesocket(ConnectSocketClientServer);
+                ConnectSocketClientServer = INVALID_SOCKET;
+                continue;
+            }
+            break;
+        }
+        Sleep(100);
     }
+    while (ConnectSocketClientServer == INVALID_SOCKET);
 
     freeaddrinfo(result);
 
@@ -294,14 +202,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
             break;
         }
     }
-
-    // Flush the pipe to allow the client to read the pipe's contents 
-    // before disconnecting. Then disconnect the pipe, and close the 
-    // handle to this pipe instance. 
-
-    FlushFileBuffers(hPipe);
-    DisconnectNamedPipe(hPipe);
-    CloseHandle(hPipe);
     closesocket(ConnectSocketClientServer);
 
     HeapFree(hHeap, 0, pchRequest);
@@ -322,7 +222,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
 
     DWORD cbBytesRead = 0, cbReplyBytes = 0, cbWritten = 0;
     BOOL fSuccess = FALSE;
-    HANDLE hPipe = NULL;
 
     SOCKET ConnectSocketListen = INVALID_SOCKET;
     SOCKET ConnectSocketServerClient = INVALID_SOCKET;
@@ -333,17 +232,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
 
     // Do some extra error checking since the app will keep running even if this
     // thread fails.
-
-    if (lpvParam == NULL)
-    {
-        printf("\nERROR - Pipe Server Failure:\n");
-        printf("   InstanceThread got an unexpected NULL value in lpvParam.\n");
-        printf("   InstanceThread exitting.\n");
-        if (pchReply != NULL) HeapFree(hHeap, 0, pchReply);
-        if (pchRequest != NULL) HeapFree(hHeap, 0, pchRequest);
-        return (DWORD)-1;
-    }
-
     if (pchRequest == NULL)
     {
         printf("\nERROR - Pipe Server Failure:\n");
@@ -362,8 +250,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
         return (DWORD)-1;
     }
 
-    hPipe = (HANDLE)lpvParam;
-
     ZeroMemory(&hints, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -371,7 +257,7 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
     hints.ai_flags = AI_PASSIVE;
 
     // Resolve the server address and port
-    iResult = getaddrinfo("localhost", DEFAULT_PORT_SERVER_CLIENT, &hints, &result);
+    iResult = getaddrinfo(NULL, DEFAULT_PORT_SERVER_CLIENT, &hints, &result);
     if (iResult != 0) {
         printf("getaddrinfo failed with error: %d\n", iResult);
         WSACleanup();
@@ -452,14 +338,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
             break;
         }
     }
-
-    // Flush the pipe to allow the client to read the pipe's contents 
-    // before disconnecting. Then disconnect the pipe, and close the 
-    // handle to this pipe instance. 
-
-    FlushFileBuffers(hPipe);
-    DisconnectNamedPipe(hPipe);
-    CloseHandle(hPipe);
     closesocket(ConnectSocketServerClient);
 
     HeapFree(hHeap, 0, pchRequest);

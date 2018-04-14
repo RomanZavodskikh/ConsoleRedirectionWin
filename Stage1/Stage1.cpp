@@ -22,16 +22,20 @@
 DWORD WINAPI InstanceThreadClientServer(LPVOID);
 DWORD WINAPI InstanceThreadServerClient(LPVOID);
 
-int _tmain(VOID)
+int _tmain(int argc, char** argv)
 {
     BOOL   fConnected = FALSE;
     DWORD  dwThreadId = 0;
-    HANDLE hPipeClientServer = INVALID_HANDLE_VALUE, hThreadClientServer = NULL;
-    HANDLE hPipeServerClient = INVALID_HANDLE_VALUE, hThreadServerClient = NULL;
-    LPTSTR lpszPipeClientServer = TEXT("\\\\.\\pipe\\clientserver");
-    LPTSTR lpszPipeServerClient = TEXT("\\\\.\\pipe\\serverclient");
+    HANDLE hThreadClientServer = NULL;
+    HANDLE hThreadServerClient = NULL;
     WSADATA wsaData;
     int iResult;
+
+    if (argc < 2)
+    {
+        _tprintf(TEXT("Usage: %s <ip addr of another instance>\n"), argv[0]);
+        return 1;
+    }
 
     // The main loop creates an instance of the named pipe and 
     // then waits for a client to connect to it. When the client 
@@ -45,103 +49,42 @@ int _tmain(VOID)
         return 1;
     }
 
+    // Create a thread for this client. 
+    hThreadClientServer = CreateThread(
+        NULL,              // no security attribute 
+        0,                 // default stack size 
+        InstanceThreadClientServer,    // thread proc
+        NULL,    // thread parameter 
+        0,                 // not suspended 
+        &dwThreadId);      // returns thread ID 
+
+    if (hThreadClientServer == NULL)
+    {
+        _tprintf(TEXT("CreateThread failed, GLE=%d.\n"), GetLastError());
+        return -1;
+    }
+    else CloseHandle(hThreadClientServer);
+    // =================================================================
+
+    // Create a thread for this client. 
+    hThreadServerClient = CreateThread(
+        NULL,              // no security attribute 
+        0,                 // default stack size 
+        InstanceThreadServerClient,    // thread proc
+        argv[1],    // thread parameter 
+        0,                 // not suspended 
+        &dwThreadId);      // returns thread ID 
+
+    if (hThreadServerClient == NULL)
+    {
+        _tprintf(TEXT("CreateThread failed, GLE=%d.\n"), GetLastError());
+        return -1;
+    }
+    else CloseHandle(hThreadServerClient);
+
     for (;;)
     {
-        hPipeClientServer = CreateNamedPipe(
-            lpszPipeClientServer,             // pipe name 
-            PIPE_ACCESS_DUPLEX,       // read/write access 
-            PIPE_TYPE_MESSAGE |       // message type pipe 
-            PIPE_READMODE_MESSAGE |   // message-read mode 
-            PIPE_WAIT,                // blocking mode 
-            PIPE_UNLIMITED_INSTANCES, // max. instances  
-            BUFSIZE,                  // output buffer size 
-            BUFSIZE,                  // input buffer size 
-            0,                        // client time-out 
-            NULL);                    // default security attribute 
-
-        hPipeServerClient = CreateNamedPipe(
-            lpszPipeServerClient,             // pipe name 
-            PIPE_ACCESS_DUPLEX,       // read/write access 
-            PIPE_TYPE_MESSAGE |       // message type pipe 
-            PIPE_READMODE_MESSAGE |   // message-read mode 
-            PIPE_WAIT,                // blocking mode 
-            PIPE_UNLIMITED_INSTANCES, // max. instances  
-            BUFSIZE,                  // output buffer size 
-            BUFSIZE,                  // input buffer size 
-            0,                        // client time-out 
-            NULL);                    // default security attribute 
-
-        if (hPipeClientServer == INVALID_HANDLE_VALUE)
-        {
-            _tprintf(TEXT("CreateNamedPipe failed, GLE=%d.\n"), GetLastError());
-            return -1;
-        }
-
-        // Wait for the client to connect; if it succeeds, 
-        // the function returns a nonzero value. If the function
-        // returns zero, GetLastError returns ERROR_PIPE_CONNECTED. 
-
-        fConnected = ConnectNamedPipe(hPipeClientServer, NULL) ?
-            TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
-
-        if (fConnected)
-        {
-            // Create a thread for this client. 
-            hThreadClientServer = CreateThread(
-                NULL,              // no security attribute 
-                0,                 // default stack size 
-                InstanceThreadClientServer,    // thread proc
-                (LPVOID)hPipeClientServer,    // thread parameter 
-                0,                 // not suspended 
-                &dwThreadId);      // returns thread ID 
-
-            if (hThreadClientServer == NULL)
-            {
-                _tprintf(TEXT("CreateThread failed, GLE=%d.\n"), GetLastError());
-                return -1;
-            }
-            else CloseHandle(hThreadClientServer);
-        }
-        else
-            // The client could not connect, so close the pipe. 
-            CloseHandle(hPipeClientServer);
-
-        // =================================================================
-
-        if (hPipeServerClient == INVALID_HANDLE_VALUE)
-        {
-            _tprintf(TEXT("CreateNamedPipe(2) failed, GLE=%d.\n"), GetLastError());
-            return -1;
-        }
-
-        // Wait for the client to connect; if it succeeds, 
-        // the function returns a nonzero value. If the function
-        // returns zero, GetLastError returns ERROR_PIPE_CONNECTED. 
-
-        fConnected = ConnectNamedPipe(hPipeServerClient, NULL) ?
-            TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
-
-        if (fConnected)
-        {
-            // Create a thread for this client. 
-            hThreadServerClient = CreateThread(
-                NULL,              // no security attribute 
-                0,                 // default stack size 
-                InstanceThreadServerClient,    // thread proc
-                (LPVOID)hPipeServerClient,    // thread parameter 
-                0,                 // not suspended 
-                &dwThreadId);      // returns thread ID 
-
-            if (hThreadServerClient == NULL)
-            {
-                _tprintf(TEXT("CreateThread failed, GLE=%d.\n"), GetLastError());
-                return -1;
-            }
-            else CloseHandle(hThreadServerClient);
-        }
-        else
-            // The client could not connect, so close the pipe. 
-            CloseHandle(hThreadServerClient);
+        Sleep(100);
     }
 
     return 0;
@@ -160,7 +103,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
 
     DWORD cbBytesRead = 0, cbReplyBytes = 0, cbWritten = 0;
     BOOL fSuccess = FALSE;
-    HANDLE hPipe = NULL;
 
     SOCKET ConnectSocketClientServer = INVALID_SOCKET;
     SOCKET ConnectSocketListen = INVALID_SOCKET;
@@ -171,17 +113,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
 
     // Do some extra error checking since the app will keep running even if this
     // thread fails.
-
-    if (lpvParam == NULL)
-    {
-        printf("\nERROR - Pipe Server Failure:\n");
-        printf("   InstanceThread got an unexpected NULL value in lpvParam.\n");
-        printf("   InstanceThread exitting.\n");
-        if (pchReply != NULL) HeapFree(hHeap, 0, pchReply);
-        if (pchRequest != NULL) HeapFree(hHeap, 0, pchRequest);
-        return (DWORD)-1;
-    }
-
     if (pchRequest == NULL)
     {
         printf("\nERROR - Pipe Server Failure:\n");
@@ -200,8 +131,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
         return (DWORD)-1;
     }
 
-    hPipe = (HANDLE)lpvParam;
-
     ZeroMemory(&hints, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -209,7 +138,7 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
     hints.ai_flags = AI_PASSIVE;
 
     // Resolve the server address and port
-    iResult = getaddrinfo("localhost", DEFAULT_PORT_CLIENT_SERVER, &hints, &result);
+    iResult = getaddrinfo(NULL, DEFAULT_PORT_CLIENT_SERVER, &hints, &result);
     if (iResult != 0) {
         printf("getaddrinfo failed with error: %d\n", iResult);
         WSACleanup();
@@ -291,14 +220,6 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
         }
     }
 
-    // Flush the pipe to allow the client to read the pipe's contents 
-    // before disconnecting. Then disconnect the pipe, and close the 
-    // handle to this pipe instance. 
-
-    FlushFileBuffers(hPipe);
-    DisconnectNamedPipe(hPipe);
-    CloseHandle(hPipe);
-
     HeapFree(hHeap, 0, pchRequest);
     HeapFree(hHeap, 0, pchReply);
     return 1;
@@ -317,7 +238,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
 
     DWORD cbBytesRead = 0, cbReplyBytes = 0, cbWritten = 0;
     BOOL fSuccess = FALSE;
-    HANDLE hPipe = NULL;
 
     SOCKET ConnectSocketServerClient = INVALID_SOCKET;
     struct addrinfo *result = NULL,
@@ -327,17 +247,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
 
     // Do some extra error checking since the app will keep running even if this
     // thread fails.
-
-    if (lpvParam == NULL)
-    {
-        printf("\nERROR - Pipe Server Failure:\n");
-        printf("   InstanceThread got an unexpected NULL value in lpvParam.\n");
-        printf("   InstanceThread exitting.\n");
-        if (pchReply != NULL) HeapFree(hHeap, 0, pchReply);
-        if (pchRequest != NULL) HeapFree(hHeap, 0, pchRequest);
-        return (DWORD)-1;
-    }
-
     if (pchRequest == NULL)
     {
         printf("\nERROR - Pipe Server Failure:\n");
@@ -356,41 +265,46 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
         return (DWORD)-1;
     }
 
-    hPipe = (HANDLE)lpvParam;
-
     ZeroMemory(&hints, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
-    // Resolve the server address and port
-    iResult = getaddrinfo("localhost", DEFAULT_PORT_SERVER_CLIENT, &hints, &result);
-    if (iResult != 0) {
-        printf("getaddrinfo failed with error: %d\n", iResult);
-        WSACleanup();
-        return 1;
-    }
-
     // Attempt to connect to an address until one succeeds
-    for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
-        // Create a SOCKET for connecting to server
-        ConnectSocketServerClient = socket(ptr->ai_family, ptr->ai_socktype,
-            ptr->ai_protocol);
-        if (ConnectSocketServerClient == INVALID_SOCKET) {
-            printf("socket failed with error: %ld\n", WSAGetLastError());
-            WSACleanup();
-            return 1;
-        }
-
-        // Connect to server.
-        iResult = connect(ConnectSocketServerClient, ptr->ai_addr, (int)ptr->ai_addrlen);
-        if (iResult == SOCKET_ERROR) {
-            closesocket(ConnectSocketServerClient);
-            ConnectSocketServerClient = INVALID_SOCKET;
+    do
+    {
+        // Resolve the server address and port
+        char bufName[80];
+        size_t ign;
+        wcstombs_s(&ign, bufName, (TCHAR*)lpvParam, 80);
+        iResult = getaddrinfo(bufName, DEFAULT_PORT_SERVER_CLIENT, &hints, &result);
+        if (iResult != 0) {
+            printf("getaddrinfo failed with error: %d with host %s\n", iResult, (char*)bufName);
+            Sleep(1000);
             continue;
         }
-        break;
-    }
+
+        for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
+            // Create a SOCKET for connecting to server
+            ConnectSocketServerClient = socket(ptr->ai_family, ptr->ai_socktype,
+                ptr->ai_protocol);
+            if (ConnectSocketServerClient == INVALID_SOCKET) {
+                printf("socket failed with error: %ld\n", WSAGetLastError());
+                WSACleanup();
+                return 1;
+            }
+
+            // Connect to server.
+            iResult = connect(ConnectSocketServerClient, ptr->ai_addr, (int)ptr->ai_addrlen);
+            if (iResult == SOCKET_ERROR) {
+                closesocket(ConnectSocketServerClient);
+                ConnectSocketServerClient = INVALID_SOCKET;
+                continue;
+            }
+            break;
+        }
+        Sleep(100);
+    } while (ConnectSocketServerClient == INVALID_SOCKET);
     freeaddrinfo(result);
 
     if (ConnectSocketServerClient == INVALID_SOCKET) {
@@ -426,14 +340,6 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
             break;
         }
     }
-
-    // Flush the pipe to allow the client to read the pipe's contents 
-    // before disconnecting. Then disconnect the pipe, and close the 
-    // handle to this pipe instance. 
-
-    FlushFileBuffers(hPipe);
-    DisconnectNamedPipe(hPipe);
-    CloseHandle(hPipe);
 
     HeapFree(hHeap, 0, pchRequest);
     HeapFree(hHeap, 0, pchReply);

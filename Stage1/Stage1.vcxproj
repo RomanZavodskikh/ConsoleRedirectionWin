@@ -23,7 +23,7 @@
     <ProjectGuid>{7271380B-8F0F-40B6-9280-A632E7BF2918}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>Stage1</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.15063.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
     <ProjectName>Server</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
