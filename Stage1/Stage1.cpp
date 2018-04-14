@@ -1,11 +1,23 @@
 #include "stdafx.h"
 
+#define WIN32_LEAN_AND_MEAN
+
 #include <windows.h> 
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <stdio.h> 
+#include <stdlib.h>
 #include <tchar.h>
 #include <strsafe.h>
 
 #define BUFSIZE 512
+#define DEFAULT_PORT_SERVER_CLIENT "49023"
+#define DEFAULT_PORT_CLIENT_SERVER "49027"
+
+// Need to link with Ws2_32.lib, Mswsock.lib, and Advapi32.lib
+#pragma comment (lib, "Ws2_32.lib")
+#pragma comment (lib, "Mswsock.lib")
+#pragma comment (lib, "AdvApi32.lib")
 
 DWORD WINAPI InstanceThreadClientServer(LPVOID);
 DWORD WINAPI InstanceThreadServerClient(LPVOID);
@@ -18,12 +30,20 @@ int _tmain(VOID)
     HANDLE hPipeServerClient = INVALID_HANDLE_VALUE, hThreadServerClient = NULL;
     LPTSTR lpszPipeClientServer = TEXT("\\\\.\\pipe\\clientserver");
     LPTSTR lpszPipeServerClient = TEXT("\\\\.\\pipe\\serverclient");
+    WSADATA wsaData;
+    int iResult;
 
     // The main loop creates an instance of the named pipe and 
     // then waits for a client to connect to it. When the client 
     // connects, a thread is created to handle communications 
     // with that client, and this loop is free to wait for the
     // next client connect request. It is an infinite loop.
+
+    iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (iResult != 0) {
+        printf("WSAStartup failed with error: %d\n", iResult);
+        return 1;
+    }
 
     for (;;)
     {
@@ -142,6 +162,13 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
     BOOL fSuccess = FALSE;
     HANDLE hPipe = NULL;
 
+    SOCKET ConnectSocketClientServer = INVALID_SOCKET;
+    SOCKET ConnectSocketListen = INVALID_SOCKET;
+    struct addrinfo *result = NULL,
+        *ptr = NULL,
+        hints;
+    int iResult;
+
     // Do some extra error checking since the app will keep running even if this
     // thread fails.
 
@@ -175,22 +202,69 @@ DWORD WINAPI InstanceThreadClientServer(LPVOID lpvParam)
 
     hPipe = (HANDLE)lpvParam;
 
+    ZeroMemory(&hints, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_PASSIVE;
+
+    // Resolve the server address and port
+    iResult = getaddrinfo("localhost", DEFAULT_PORT_CLIENT_SERVER, &hints, &result);
+    if (iResult != 0) {
+        printf("getaddrinfo failed with error: %d\n", iResult);
+        WSACleanup();
+        return 1;
+    }
+
+    // Create a SOCKET for connecting to server
+    ConnectSocketListen = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (ConnectSocketListen == INVALID_SOCKET) {
+        printf("socket failed with error: %ld\n", WSAGetLastError());
+        freeaddrinfo(result);
+        WSACleanup();
+        return 1;
+    }
+
+    // Setup the TCP listening socket
+    iResult = bind(ConnectSocketListen, result->ai_addr, (int)result->ai_addrlen);
+    if (iResult == SOCKET_ERROR) {
+        printf("bind failed with error: %d\n", WSAGetLastError());
+        freeaddrinfo(result);
+        closesocket(ConnectSocketListen);
+        WSACleanup();
+        return 1;
+    }
+
+    freeaddrinfo(result);
+
+    iResult = listen(ConnectSocketListen, SOMAXCONN);
+    if (iResult == SOCKET_ERROR) {
+        printf("listen failed with error: %d\n", WSAGetLastError());
+        closesocket(ConnectSocketListen);
+        WSACleanup();
+        return 1;
+    }
+
+    // Accept a client socket
+    ConnectSocketClientServer = accept(ConnectSocketListen, NULL, NULL);
+    if (ConnectSocketClientServer == INVALID_SOCKET) {
+        printf("accept failed with error: %d\n", WSAGetLastError());
+        closesocket(ConnectSocketListen);
+        WSACleanup();
+        return 1;
+    }
+
+    // No longer need server socket
+    closesocket(ConnectSocketListen);
+
     // Loop until done reading
     while (1)
     {
         HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
         HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
 
-        // Read client requests from the pipe. This simplistic code only allows messages
-        // up to BUFSIZE characters in length.
-        fSuccess = ReadFile(
-            hPipe,        // handle to pipe 
-            pchRequest,    // buffer to receive data 
-            BUFSIZE * sizeof(TCHAR), // size of buffer 
-            &cbBytesRead, // number of bytes read 
-            NULL);        // not overlapped I/O 
-
-        if (!fSuccess || cbBytesRead == 0)
+        cbBytesRead = recv(ConnectSocketClientServer, (char*)pchRequest, BUFSIZE * sizeof(TCHAR), 0);
+        if (cbBytesRead == 0)
         {
             if (GetLastError() == ERROR_BROKEN_PIPE)
             {
@@ -245,6 +319,12 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
     BOOL fSuccess = FALSE;
     HANDLE hPipe = NULL;
 
+    SOCKET ConnectSocketServerClient = INVALID_SOCKET;
+    struct addrinfo *result = NULL,
+        *ptr = NULL,
+        hints;
+    int iResult;
+
     // Do some extra error checking since the app will keep running even if this
     // thread fails.
 
@@ -278,6 +358,47 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
 
     hPipe = (HANDLE)lpvParam;
 
+    ZeroMemory(&hints, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    // Resolve the server address and port
+    iResult = getaddrinfo("localhost", DEFAULT_PORT_SERVER_CLIENT, &hints, &result);
+    if (iResult != 0) {
+        printf("getaddrinfo failed with error: %d\n", iResult);
+        WSACleanup();
+        return 1;
+    }
+
+    // Attempt to connect to an address until one succeeds
+    for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
+        // Create a SOCKET for connecting to server
+        ConnectSocketServerClient = socket(ptr->ai_family, ptr->ai_socktype,
+            ptr->ai_protocol);
+        if (ConnectSocketServerClient == INVALID_SOCKET) {
+            printf("socket failed with error: %ld\n", WSAGetLastError());
+            WSACleanup();
+            return 1;
+        }
+
+        // Connect to server.
+        iResult = connect(ConnectSocketServerClient, ptr->ai_addr, (int)ptr->ai_addrlen);
+        if (iResult == SOCKET_ERROR) {
+            closesocket(ConnectSocketServerClient);
+            ConnectSocketServerClient = INVALID_SOCKET;
+            continue;
+        }
+        break;
+    }
+    freeaddrinfo(result);
+
+    if (ConnectSocketServerClient == INVALID_SOCKET) {
+        printf("Unable to connect to server!\n");
+        WSACleanup();
+        return 1;
+    }
+
     // Loop until done reading
     while (1)
     {
@@ -297,15 +418,9 @@ DWORD WINAPI InstanceThreadServerClient(LPVOID lpvParam)
             break;
         }
 
-        // Write the reply to the pipe. 
-        fSuccess = WriteFile(
-            hPipe,        // handle to pipe 
-            pchReply,     // buffer to write from 
-            cbReplyBytes, // number of bytes to write 
-            &cbWritten,   // number of bytes written 
-            NULL);        // not overlapped I/O 
 
-        if (!fSuccess || cbReplyBytes != cbWritten)
+        cbWritten = send(ConnectSocketServerClient, (char*)pchReply, cbReplyBytes, 0);
+        if (cbReplyBytes != cbWritten)
         {
             _tprintf(TEXT("InstanceThread WriteFile failed, GLE=%d.\n"), GetLastError());
             break;
